@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Build & test
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache JUCE (FetchContent)
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: ${{ runner.os }}-juce-deps-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build unit tests
+        run: cmake --build build --target MidiDestructTests -j 4
+
+      - name: Run unit tests
+        run: ./build/MidiDestructTests
+
+  release:
+    name: Build & publish release artifacts
+    needs: test
+    # Only ever cut a release from a tag that's actually on main - never
+    # from a test/POC branch, even if someone tags one by mistake.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag is on main
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor "${{ github.sha }}" origin/main; then
+            echo "::error::Tag ${{ github.ref_name }} is not reachable from main - refusing to publish a release."
+            exit 1
+          fi
+
+      - name: Cache JUCE (FetchContent)
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: ${{ runner.os }}-juce-deps-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build plugin formats
+        run: cmake --build build --target MidiDestructPlugin_Standalone MidiDestructPlugin_VST3 MidiDestructPlugin_AU -j 4
+
+      - name: Package artifacts
+        run: |
+          cd build/MidiDestructPlugin_artefacts/Release
+          ditto -c -k --sequesterRsrc VST3/MidiDestruct.vst3 MidiDestruct-macOS-VST3.zip
+          ditto -c -k --sequesterRsrc AU/MidiDestruct.component MidiDestruct-macOS-AU.zip
+          ditto -c -k --sequesterRsrc Standalone/MidiDestruct.app MidiDestruct-macOS-Standalone.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/MidiDestructPlugin_artefacts/Release/MidiDestruct-macOS-VST3.zip
+            build/MidiDestructPlugin_artefacts/Release/MidiDestruct-macOS-AU.zip
+            build/MidiDestructPlugin_artefacts/Release/MidiDestruct-macOS-Standalone.zip
